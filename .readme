@@ -1,0 +1,2 @@
+python egyapi.py
+http --form POST localhost:1234 url='https://w.egybest.org/movie/ashbah-europa-2022/?ref=home-new' q='720p' refresh_cookie=true
