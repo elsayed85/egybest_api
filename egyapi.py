@@ -274,9 +274,10 @@ def main():
     data = request.form
     url = data.get(key='url')
     q = data.get(key='q')
-    refresh_cookie = data.get(key='refresh_cookie' , type=bool)
-    debug(refresh_cookie)
-    # shutil.rmtree('cookies')
+    
+    refresh_cookie = data.get('refresh_cookie', default=False, type=lambda v: v.lower() == 'true')
+    if refresh_cookie and os.path.exists('cookies'):
+        shutil.rmtree('cookies')
         
     grabber = EgyGrab(url)
     if grabber.error == True:
