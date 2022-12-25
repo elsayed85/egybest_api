@@ -4,6 +4,7 @@ from numexpr import evaluate
 from enum import Enum
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from devtools import debug
 
 from flask import Flask
 from flask import jsonify
@@ -20,7 +21,10 @@ import time
 import sys
 import re
 import os
+import shutil
 
+def log(text):
+    return app.logger.info(text)
 
 class TYPES(Enum):
     episode = 'episode'
@@ -39,12 +43,14 @@ class EgyGrab():
         base_url = urlparse(url)
         self.base_url = '{uri.scheme}://{uri.netloc}'.format(uri=base_url)
         self.type = None
+        self.error = False
         for t in TYPES:
             if '/%s/' % t.value in url:
                 self.type = TYPES[t.name]
                 break
         if self.type is None:
-            raise ValueError('There is nothing to download :(')
+            log('There is nothing to download :')
+            self.error = True
         self.threads = []
         self.results = []
 
@@ -77,7 +83,7 @@ class EgyGrab():
 
             self.results += sorted(season_results,
                                    key=lambda x: x[0], reverse=True)
-            # grabbed.append(re.search(r'.+?\/season\/(.+?)(\/|$)', url)[1])
+            log("%s grabbed" % re.search(r'.+?\/season\/(.+?)(\/|$)', url)[1])
 
         return [v for _, v in self.results]
 
@@ -89,21 +95,27 @@ class EgyGrab():
             }
 
             cookiesPath = 'cookies/cookies_%s.pickle' % str(id)
+            
             if os.path.exists(cookiesPath) and last_session:
+                log('cookie is loaded')
                 sess.cookies = pickle.load(open(cookiesPath, 'rb'))
-
+            else:
+                log('cookie is not loaded')
+                
             html = sess.get(url).text
+            
+            # copy html to extract info later
             main_html = html
-            # open('test.html', 'w', encoding='utf-8').write(html)
-            # html = open('html.txt', encoding='utf-8').read()
-            # print('item page loaded!')
-
-            # print(html)
+            
             html = html.replace("'+'", '')
+            
             # call = 'https://mila.egybest.ninja/api?call='+re.search(r'rel="#yt_trailer".+?data-call="(.+?)"', html)[1]
+            
             qualities = ['240p', '480p', '720p', '1080p']
             permitted = False
             code = None
+            
+            # search for code
             while not code and len(qualities):
                 q = qualities.pop()
                 if not permitted:
@@ -112,10 +124,16 @@ class EgyGrab():
                     code = re.search(
                         q + r'.+?"(/api\?call=.+?)"><i class="i-dl">', html)
             if not code:
-                print('%s no link was available' % url)
-                return (id, '')
+                # stop the application
+                return (id, {
+                    "status" : "error",
+                    "message" : "No links found"
+                })
+            
             code = code[1]
             # watch = 'https://mila.egybest.ninja'+re.search(r'<iframe.+?src="(.+?)"', html)[1]
+            
+            # searching for pramters to get the download link
             name = re.search(
                 r"([a-z0-9]+)={'url':[^,]+?\+([a-z0-9]{3,}),", html, re.I)
             data = re.search(
@@ -135,49 +153,31 @@ class EgyGrab():
             for i in range(len(l)):
                 data[a].append(l[i])
 
-            vidstream = sess.get(self.base_url+code,
-                                 allow_redirects=False).headers['location']
-            app.logger.info(vidstream)
+            vidstream = sess.get(self.base_url+code, allow_redirects=False).headers['location']
 
             if vidstream[:2] == '/?':
+                # grab vidstream link without cookies
+                log('grabbing vidstream link without cookies')
                 verification = self.base_url + '/api?call=' + \
                     (''.join([data[b][v] for v in data[a] if v in data[b]]))
                 click = self.base_url + '/' + \
                     base64.b64decode(
                         re.search(r"=\['([^']+?)'\]", html)[1] + '===').decode('utf8')
-                res = sess.get(click).text
-                # args = re.search(
-                #     r'\("(.+?)",(\d+),"(.+?)",(\d+),(\d+),(\d+)\)', res)
-                # cipher, _, key, offset, base, _ = args.groups()
-                # base = int(base)
-                # offset = int(offset)
-                # cipher = cipher.split(key[base])
-                # cipher = [c.translate(c.maketrans(key, ''.join(
-                #     [str(i) for i in range(len(key))]))) for c in cipher]
-                # cipher = [chr(int(c, base) - offset) for c in cipher if c]
-                # print(sess.cookies)
-                # c_name, c_value = tuple(re.search(r'cookie="(.+?);', ''.join(cipher))[1].split('='))
-                # sess.cookies.set(c_name, c_value)
+                res = sess.get(click)
                 time.sleep(1)
-                mm = sess.post(verification, data={val[1]: val[2]})
-
-                vidstream = sess.get(
-                    self.base_url +code, allow_redirects=False).headers['location']
-                # sess.cookies.pop(c_name)
+                sess.post(verification, data={val[1]: val[2]})
+                vidstream = sess.get(self.base_url +code, allow_redirects=False).headers['location']
             else:
-                # print('vidstream link grabbed using cookies')
+                # vidstream link grabbed using cookies
+                log('vidstream link grabbed using cookies')
                 pass
 
-            app.logger.info(re.search(r'vidstream.+?\/f\/.+?\/', vidstream))
             # vidstream = 'https://mila.egybest.ninja/vs-mirror/vidstream.to/f/YvD0EpU8nU'
-            vidstream2 = vidstream
             vidstream = self.base_url + '/vs-mirror/' + re.search(r'vidstream.+?\/f\/.+?\/', vidstream)[0]
-            app.logger.info(vidstream2)
 
-            # print(vidstream)
             html = sess.get(vidstream).text
-            # print(html)
-            # html = open('html.txt', encoding='utf-8').read()
+            
+            # get the download link from the vidstream page
             if not re.search('<a href="(h.+?)" class="bigbutton"', html):
                 a0c = literal_eval(re.search(r'var \w=(\[.+?\]);', html)[1])
                 a0d_offset = re.search(
@@ -199,7 +199,6 @@ class EgyGrab():
                     c = evaluate(step)
                     if c == limit:
                         break
-
                     a0c.append(a0c.pop(0))
 
                 token = re.search(r",[^,]+?=\[a0[a-zA-Z]\((.+?)\)", html)
@@ -228,54 +227,62 @@ class EgyGrab():
                 for match in re.finditer(r"%s\[([^=()]+?)\]=a0.\(([^)].+?)\)" % arrName, html):
                     keys[int(match[1], 16)] = a0d(match[2])
 
-                # print(token)
-                app.logger.info(token + "===")
-                sess.get(self.base_url + '/' +
-                         base64.b64decode(token + '===').decode('utf8'))
-                verification = ''.join(
-                    [values[keys[i]] for i in range(len(keys)) if keys[i] in values])
-                # time.sleep(.2)
-                sess.post(self.base_url + '/tvc.php?verify='+verification,
-                          data={re.search(r"'([^']+?)':'ok'", html)[1]: 'ok'})
-                html = sess.get(vidstream).text
+                sess.get(self.base_url + '/' + base64.b64decode(token + '===').decode('utf8'))
+                verification = ''.join([values[keys[i]] for i in range(len(keys)) if keys[i] in values])
+                sess.post(self.base_url + '/tvc.php?verify='+verification,data={re.search(r"'([^']+?)':'ok'", html)[1]: 'ok'})
+                vidstream_html = sess.get(vidstream).text
+                log('download link grabbed without cookies')
             else:
-                # print('download link grabbed using cookies')
+                # download link grabbed using cookies
+                log('download link grabbed using cookies')
                 pass
+            
+            # save cookies for the next time in cookies folder
             if not os.path.exists('cookies'):
                 os.mkdir('cookies')
             pickle.dump(sess.cookies, open(cookiesPath, 'wb'))
+            log('refresh cookies')
 
+            # select extra info 
             doc = BeautifulSoup(main_html, 'html.parser')
             main = doc.find('div','full_movie')
             cover = main.find('div', 'movie_img').find('img')['src']
             title = main.find('td', 'movie_title').find('h1').text
 
-            # return (id , re.search('<a href="(h.+?)" class="bigbutton"', html)[1])
-            download_url = re.search('<a href="(h.+?)" class="bigbutton"', html)[1]
+            download_url = re.search('<a href="(h.+?)" class="bigbutton"', vidstream_html)[1]
             watch_url = download_url.replace('/dl/', '/watch/')
+            m3u8_url = download_url.replace('/dl/', '/stream/') + "/stream.m3u8"
             return (id, {
                 'title': title,
                 'cover': cover,
                 'quilty' : quality,
                 'watch_url': watch_url,
-                'download_url': download_url + "/[Elsayed Kamal]" + title.replace(' ', '.') + ".mp4"
+                'm3u8_url': m3u8_url,
+                'download_url': download_url + "/[Elsayed Kamal]" + title.replace(' ', '.') + ".mp4",
+                'status' : 'all_done'
             })
         except Exception as e:
             # traceback.print_exc()
-            app.logger.info("retry")
+            log("....Retring....")
             return self.__grab_item(url, quality, last_session, id)
-
+        
 
 app = Flask(__name__)
 
-
-@app.route('/main', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST'] )
 def main():
     data = request.form
-    url = data['url']
-    q = data['q']
-    c = data['c']
+    url = data.get(key='url')
+    q = data.get(key='q')
+    refresh_cookie = data.get(key='refresh_cookie' , type=bool)
+    shutil.rmtree('cookies')
+        
     grabber = EgyGrab(url)
+    if grabber.error == True:
+        return jsonify({
+            "status" : "error",
+            "message" : "There is nothing to download"
+        })
     type_name = grabber.type.name
     return jsonify(grabber.grab(q))
 
