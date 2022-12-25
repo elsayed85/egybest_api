@@ -275,7 +275,8 @@ def main():
     url = data.get(key='url')
     q = data.get(key='q')
     refresh_cookie = data.get(key='refresh_cookie' , type=bool)
-    shutil.rmtree('cookies')
+    debug(refresh_cookie)
+    # shutil.rmtree('cookies')
         
     grabber = EgyGrab(url)
     if grabber.error == True:
